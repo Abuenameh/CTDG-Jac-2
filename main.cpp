@@ -540,21 +540,21 @@ worker_input* initialize(double Wi, double Wf, double mu, vector<double>& xi, ma
     lopt.optimize(x0nlopt, E0nlopt);
     cout << "Enlopt = " << E0nlopt << endl;
 
-//    opt gopt(GD_MLSL, 2*L*dim);
-//    gopt.set_lower_bounds(-1);
-//    gopt.set_upper_bounds(1);
-//    gopt.set_maxtime(600);
-//    gopt.set_min_objective(energymin, &grad);
-//    gopt.set_local_optimizer(lopt);
-//    gopt.set_population(10);
-//    double E0nlopt2;
-//    vector<double> x0nlopt2 = xrand;
-//    gopt.optimize(x0nlopt2, E0nlopt2);
-//    cout << "Enlopt2(1) = " << E0nlopt2 << endl;
-//    lopt.optimize(x0nlopt2, E0nlopt2);
-//    cout << "Enlopt2(2) = " << E0nlopt2 << endl;
-//    
-//    exit(0);
+    opt gopt(GD_MLSL, 2*L*dim);
+    gopt.set_lower_bounds(-1);
+    gopt.set_upper_bounds(1);
+    gopt.set_maxtime(600);
+    gopt.set_min_objective(energymin, &grad);
+    gopt.set_local_optimizer(lopt);
+    gopt.set_population(100);
+    double E0nlopt2;
+    vector<double> x0nlopt2 = xrand;
+    gopt.optimize(x0nlopt2, E0nlopt2);
+    cout << "Enlopt2(1) = " << E0nlopt2 << endl;
+    lopt.optimize(x0nlopt2, E0nlopt2);
+    cout << "Enlopt2(2) = " << E0nlopt2 << endl;
+    
+    exit(0);
 
     vector<double> x0;
     if (E0ipopt < E0nlopt) {
