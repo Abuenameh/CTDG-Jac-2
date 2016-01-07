@@ -70,6 +70,8 @@ typedef interprocess::allocator<complex<double>, segment_manager_t> complex_allo
 typedef interprocess::vector<complex<double>, complex_allocator> complex_vector;
 typedef interprocess::allocator<complex_vector, segment_manager_t> complex_vector_allocator;
 typedef interprocess::vector<complex_vector, complex_vector_allocator> complex_vector_vector;
+typedef interprocess::allocator<complex_vector_vector, segment_manager_t> complex_vector_vector_allocator;
+typedef interprocess::vector<complex_vector_vector, complex_vector_vector_allocator> complex_vector_vector_vector;
 
 typedef interprocess::allocator<char, segment_manager_t> char_allocator;
 typedef interprocess::basic_string<char, std::char_traits<char>, char_allocator> char_string;
@@ -85,6 +87,7 @@ struct worker_input {
     complex_vector_vector f0;
     char_string integrator;
     double dt;
+    int ngrid;
 
     worker_input(const void_allocator& void_alloc) : xi(void_alloc), J0(void_alloc), x0(void_alloc), f0(void_alloc), integrator(void_alloc) {
     }
@@ -108,11 +111,13 @@ struct worker_output {
     double Ef;
     double Q;
     double p;
+    double_vector ts;
     double_vector Es;
     complex_vector b0;
     complex_vector bf;
     complex_vector_vector f0;
     complex_vector_vector ff;
+    complex_vector_vector_vector fs;
     char_string runtime;
     bool success;
 
@@ -122,7 +127,7 @@ struct worker_output {
 
     bool full;
 
-    worker_output(const void_allocator& void_alloc) : Es(void_alloc), b0(void_alloc), bf(void_alloc), f0(void_alloc), ff(void_alloc), runtime(void_alloc), full(false) {
+    worker_output(const void_allocator& void_alloc) : ts(void_alloc), Es(void_alloc), b0(void_alloc), bf(void_alloc), f0(void_alloc), ff(void_alloc), fs(void_alloc), runtime(void_alloc), full(false) {
     }
 };
 
@@ -133,12 +138,14 @@ struct results {
     double Q;
     double p;
     double U0;
+    vector<double> ts;
     vector<double> Es;
     vector<double> J0;
     vector<complex<double>> b0;
     vector<complex<double>> bf;
     vector<vector<complex<double>>> f0;
     vector<vector<complex<double>>> ff;
+    vector<vector<vector<complex<double>>>> fs;
     string runtime;
 
     //    results(const void_allocator& void_alloc) : Es(void_alloc), J0(void_alloc), b0(void_alloc), bf(void_alloc), f0(void_alloc), ff(void_alloc), runtime(void_alloc) {
@@ -203,8 +210,8 @@ public:
                 res[j] += resi[j];
             }
         }
-//                cout << res << endl;
-//                exit(0);
+        //                cout << res << endl;
+        //                exit(0);
         return res;
     }
 
@@ -219,13 +226,13 @@ private:
 
 class ODEFunction : public Callback2 {
 public:
-    
+
     ODEFunction() {
         inSparsity.push_back(Sparsity::dense(2 * L * dim));
         inSparsity.push_back(Sparsity::dense(0, 0));
         inSparsity.push_back(Sparsity::dense(L + 4));
         inSparsity.push_back(Sparsity::dense(1));
-        
+
         outSparsity.push_back(Sparsity::dense(2 * L * dim));
         outSparsity.push_back(Sparsity::dense(0, 0));
         outSparsity.push_back(Sparsity::dense(0, 0));
@@ -251,36 +258,35 @@ public:
         vector<double> fin = arg[0].nonzeros();
         vector<double> p = arg[2].nonzeros();
         double t = arg[3].toScalar();
-        
+
         double Wi = p[L];
         double Wf = p[L + 1];
         double mu = p[L + 2];
         double tau = p[L + 3];
-        
+
         double Wt, Wtp;
         if (t < tau) {
             Wt = Wi + (Wf - Wi) * t / tau;
             Wtp = (Wf - Wi) / tau;
-        }
-        else {
+        } else {
             Wt = Wf + (Wi - Wf) * (t - tau) / tau;
             Wtp = (Wi - Wf) / tau;
         }
-        
+
         vector<double> J(L), Jp(L), dU(L);
-    double U0 = UW(Wt);
-    double U0p = UWp(Wt, Wtp);
-    for (int i = 0; i < L; i++) {
-        J[i] = JWij(Wt * p[i], Wt * p[mod(i + 1)]);
-        Jp[i] = JWijp(Wt * p[i], Wt * p[mod(i + 1)], Wtp * p[i], Wtp * p[mod(i + 1)]);
-        dU[i] = UW(Wt * p[i]) - U0;
-    }
-    
-    vector<double> odes(2 * L * dim);
-    for (int i = 0; i < 2 * L * dim; i++) {
-        odes[i] = ode(i, fin, J, Jp, U0, U0p, dU, mu);
-    }
-        
+        double U0 = UW(Wt);
+        double U0p = UWp(Wt, Wtp);
+        for (int i = 0; i < L; i++) {
+            J[i] = JWij(Wt * p[i], Wt * p[mod(i + 1)]);
+            Jp[i] = JWijp(Wt * p[i], Wt * p[mod(i + 1)], Wtp * p[i], Wtp * p[mod(i + 1)]);
+            dU[i] = UW(Wt * p[i]) - U0;
+        }
+
+        vector<double> odes(2 * L * dim);
+        for (int i = 0; i < 2 * L * dim; i++) {
+            odes[i] = ode(i, fin, J, Jp, U0, U0p, dU, mu);
+        }
+
         return vector<DMatrix>{DMatrix(odes), DMatrix(), DMatrix()};
     }
 
@@ -291,7 +297,7 @@ private:
 
 class JacFunction : public Callback2 {
 public:
-    
+
     JacFunction() {
         inSparsity.push_back(Sparsity::dense(2 * L * dim));
         inSparsity.push_back(Sparsity::dense(0, 0));
@@ -299,7 +305,7 @@ public:
         inSparsity.push_back(Sparsity::dense(1));
         inSparsity.push_back(Sparsity::dense(1));
         inSparsity.push_back(Sparsity::dense(1));
-        
+
         outSparsity.push_back(Sparsity::dense(2 * L * dim, 2 * L * dim));
         outSparsity.push_back(Sparsity::dense(0, 0));
         outSparsity.push_back(Sparsity::dense(0, 0));
@@ -325,38 +331,37 @@ public:
         vector<double> fin = arg[0].nonzeros();
         vector<double> p = arg[2].nonzeros();
         double t = arg[3].toScalar();
-        
+
         double Wi = p[L];
         double Wf = p[L + 1];
         double mu = p[L + 2];
         double tau = p[L + 3];
-        
+
         double Wt, Wtp;
         if (t < tau) {
             Wt = Wi + (Wf - Wi) * t / tau;
             Wtp = (Wf - Wi) / tau;
-        }
-        else {
+        } else {
             Wt = Wf + (Wi - Wf) * (t - tau) / tau;
             Wtp = (Wi - Wf) / tau;
         }
-        
+
         vector<double> J(L), Jp(L), dU(L);
-    double U0 = UW(Wt);
-    double U0p = UWp(Wt, Wtp);
-    for (int i = 0; i < L; i++) {
-        J[i] = JWij(Wt * p[i], Wt * p[mod(i + 1)]);
-        Jp[i] = JWijp(Wt * p[i], Wt * p[mod(i + 1)], Wtp * p[i], Wtp * p[mod(i + 1)]);
-        dU[i] = UW(Wt * p[i]) - U0;
-    }
-    
-    vector<vector<double>> jac(2 * L * dim/*, vector<double>(2 * L * dim)*/);
-    for (int i = 0; i < 2 * L * dim; i++) {
-        vector<double> jaci(2 * L * dim);
-        jacobian(jaci, i, fin, J, Jp, U0, U0p, dU, mu);
-        jac[i] = jaci;
-    }
-        
+        double U0 = UW(Wt);
+        double U0p = UWp(Wt, Wtp);
+        for (int i = 0; i < L; i++) {
+            J[i] = JWij(Wt * p[i], Wt * p[mod(i + 1)]);
+            Jp[i] = JWijp(Wt * p[i], Wt * p[mod(i + 1)], Wtp * p[i], Wtp * p[mod(i + 1)]);
+            dU[i] = UW(Wt * p[i]) - U0;
+        }
+
+        vector<vector<double>> jac(2 * L * dim/*, vector<double>(2 * L * dim)*/);
+        for (int i = 0; i < 2 * L * dim; i++) {
+            vector<double> jaci(2 * L * dim);
+            jacobian(jaci, i, fin, J, Jp, U0, U0p, dU, mu);
+            jac[i] = jaci;
+        }
+
         return vector<DMatrix>{DMatrix(jac), DMatrix(), DMatrix()};
     }
 
@@ -435,6 +440,7 @@ void threadfunc(std::string prog, double tauf, queue<input>& inputs, vector<resu
             pointRes.Ef = output->Ef;
             pointRes.Q = output->Q;
             pointRes.p = output->p;
+            pointRes.ts = vector<double>(output->ts.begin(), output->ts.end());
             pointRes.Es = vector<double>(output->Es.begin(), output->Es.end());
             pointRes.b0 = vector<complex<double>>(output->b0.begin(), output->b0.end());
             pointRes.bf = vector<complex<double>>(output->bf.begin(), output->bf.end());
@@ -443,6 +449,15 @@ void threadfunc(std::string prog, double tauf, queue<input>& inputs, vector<resu
                 ff.push_back(vector<complex<double>>(output->ff[i].begin(), output->ff[i].end()));
             }
             pointRes.ff = ff;
+            vector<vector < vector<complex<double>>>> fs;
+            for (int i = 0; i < output->fs.size(); i++) {
+                vector<vector<complex<double>>> fsi;
+                for (int j = 0; j < L; j++) {
+                    fsi.push_back(vector<complex<double>>(output->fs[i][j].begin(), output->fs[i][j].end()));
+                }
+                fs.push_back(fsi);
+            }
+            pointRes.fs = fs;
             pointRes.runtime = string(output->runtime.begin(), output->runtime.end());
             //            pointRes.Es = output->Es;
             //            pointRes.b0 = output->b0;
@@ -469,7 +484,7 @@ void threadfunc(std::string prog, double tauf, queue<input>& inputs, vector<resu
 }
 
 double energymin(const vector<double>& x, vector<double>& grad, void* data) {
-    Function& func = *(Function*)data;
+    Function& func = *(Function*) data;
     vector<DMatrix> res = func(vector<DMatrix>{x, DMatrix()});
     grad = res[0].nonzeros();
     return res[1].toScalar();
@@ -490,7 +505,7 @@ worker_input* initialize(double Wi, double Wf, double mu, vector<double>& xi, ma
 
     SX E = energy(f, J, U0, dU, mu).real();
     SX Enorm = energynorm(f, J, U0, dU, mu).real();
-    
+
     SX g = SX::sym("g", L);
     for (int i = 0; i < L; i++) {
         g[i] = 0;
@@ -524,14 +539,14 @@ worker_input* initialize(double Wi, double Wf, double mu, vector<double>& xi, ma
 
     map<string, DMatrix> res = solver(arg);
     vector<double> x0ipopt = res["x"].nonzeros();
-    double E0ipopt = nlpnorm(vector<DMatrix>{x0ipopt, DMatrix()})[0].toScalar();//res["f"].toScalar();
+    double E0ipopt = nlpnorm(vector<DMatrix>{x0ipopt, DMatrix()})[0].toScalar(); //res["f"].toScalar();
     cout << "E0ipopt = " << E0ipopt << endl;
     //        vector<double> x0 = xrand;
-//        cout << "xrand = " << ::math(xrand) << endl;
-//        cout << "x0 = " << ::math(x0) << endl;
+    //        cout << "xrand = " << ::math(xrand) << endl;
+    //        cout << "x0 = " << ::math(x0) << endl;
     //    cout << "E0 = " << ::math(res["f"].toScalar()) << endl;
 
-    opt lopt(LD_LBFGS, 2*L*dim);
+    opt lopt(LD_LBFGS, 2 * L * dim);
     lopt.set_lower_bounds(-1);
     lopt.set_upper_bounds(1);
     lopt.set_min_objective(energymin, &grad);
@@ -540,30 +555,29 @@ worker_input* initialize(double Wi, double Wf, double mu, vector<double>& xi, ma
     lopt.optimize(x0nlopt, E0nlopt);
     cout << "Enlopt = " << E0nlopt << endl;
 
-    opt gopt(GD_MLSL, 2*L*dim);
-    gopt.set_lower_bounds(-1);
-    gopt.set_upper_bounds(1);
-    gopt.set_maxtime(600);
-    gopt.set_min_objective(energymin, &grad);
-    gopt.set_local_optimizer(lopt);
-    gopt.set_population(100);
-    double E0nlopt2;
-    vector<double> x0nlopt2 = xrand;
-    gopt.optimize(x0nlopt2, E0nlopt2);
-    cout << "Enlopt2(1) = " << E0nlopt2 << endl;
-    lopt.optimize(x0nlopt2, E0nlopt2);
-    cout << "Enlopt2(2) = " << E0nlopt2 << endl;
-    
-    exit(0);
+    //    opt gopt(GD_MLSL, 2*L*dim);
+    //    gopt.set_lower_bounds(-1);
+    //    gopt.set_upper_bounds(1);
+    //    gopt.set_maxtime(600);
+    //    gopt.set_min_objective(energymin, &grad);
+    //    gopt.set_local_optimizer(lopt);
+    //    gopt.set_population(100);
+    //    double E0nlopt2;
+    //    vector<double> x0nlopt2 = xrand;
+    //    gopt.optimize(x0nlopt2, E0nlopt2);
+    //    cout << "Enlopt2(1) = " << E0nlopt2 << endl;
+    //    lopt.optimize(x0nlopt2, E0nlopt2);
+    //    cout << "Enlopt2(2) = " << E0nlopt2 << endl;
+    //    
+    //    exit(0);
 
     vector<double> x0;
     if (E0ipopt < E0nlopt) {
         x0 = x0ipopt;
-    }
-    else {
+    } else {
         x0 = x0nlopt;
     }
-    
+
     vector<complex<double>> x0i(dim);
     for (int i = 0; i < L; i++) {
         for (int n = 0; n <= nmax; n++) {
@@ -656,15 +670,71 @@ void evolve(SXFunction& E0, SXFunction& Et, Function& ode_func, Function& jac_fu
 
     void_allocator void_alloc(segment.get_segment_manager());
 
+    vector<double> grid1;
+    vector<double> grid2;
+    int ngrid = input->ngrid;
+    double griddt = tau / (ngrid - 1);
+    for (int i = 0; i < ngrid - 1; i++) {
+        grid1.push_back(i * griddt);
+        grid2.push_back(tau + i * griddt);
+    }
+    grid1.push_back(tau);
+    grid2.push_back(2 * tau);
+
+    vector<vector<double>> xs;
     vector<double> xf;
     bool half = true;
     if (half) {
-        map<string, DMatrix> res = integrator1(make_map("x0", DMatrix(x0), "p", p));
-        xf = res["xf"].nonzeros();
-        res = integrator2(make_map("x0", DMatrix(xf), "p", p));
-        xf = res["xf"].nonzeros();
-    }
-    else {
+        Simulator sim1("simulator1", integrator1, grid1);
+        map<string, DMatrix> sres1 = sim1(make_map("x0", DMatrix(x0), "p", p));
+        DMatrix xfs1 = sres1["xf"];
+        for (int i = 0; i < ngrid; i++) {
+            output->ts.push_back(grid1[i]);
+            vector<double> xfi = xfs1[Slice(2 * i * L*dim, 2 * (i + 1) * L * dim)].nonzeros();
+            xs.push_back(xfi);
+            output->Es.push_back(E0(vector<DMatrix>{xfi})[0].toScalar());
+            complex_vector_vector fsi(void_alloc);
+            for (int i = 0; i < L; i++) {
+                complex_vector fsii(void_alloc);
+                for (int n = 0; n <= nmax; n++) {
+                    fsii.push_back(complex<double>(xfi[2 * (i * dim + n)], xfi[2 * (i * dim + n) + 1]));
+                }
+                double nrm = sqrt(abs(dot(fsii, fsii)));
+                for (int n = 0; n <= nmax; n++) {
+                    fsii[n] /= nrm;
+                }
+                fsi.push_back(fsii);
+            }
+            output->fs.push_back(fsi);
+        }
+        Simulator sim2("simulator2", integrator2, grid2);
+        map<string, DMatrix> sres2 = sim2(make_map("x0", DMatrix(xs.back()), "p", p));
+        DMatrix xfs2 = sres2["xf"];
+        for (int i = 0; i < ngrid; i++) {
+            output->ts.push_back(grid2[i]);
+            vector<double> xfi = xfs2[Slice(2 * i * L*dim, 2 * (i + 1) * L * dim)].nonzeros();
+            xs.push_back(xfi);
+            output->Es.push_back(E0(vector<DMatrix>{xfi})[0].toScalar());
+            complex_vector_vector fsi(void_alloc);
+            for (int i = 0; i < L; i++) {
+                complex_vector fsii(void_alloc);
+                for (int n = 0; n <= nmax; n++) {
+                    fsii.push_back(complex<double>(xfi[2 * (i * dim + n)], xfi[2 * (i * dim + n) + 1]));
+                }
+                double nrm = sqrt(abs(dot(fsii, fsii)));
+                for (int n = 0; n <= nmax; n++) {
+                    fsii[n] /= nrm;
+                }
+                fsi.push_back(fsii);
+            }
+            output->fs.push_back(fsi);
+            xf = xs.back();
+        }
+        //        map<string, DMatrix> res = integrator1(make_map("x0", DMatrix(x0), "p", p));
+        //        xf = res["xf"].nonzeros();
+        //        res = integrator2(make_map("x0", DMatrix(xf), "p", p));
+        //        xf = res["xf"].nonzeros();
+    } else {
         map<string, DMatrix> res = integrator(make_map("x0", DMatrix(x0), "p", p));
         /*vector<double>*/ xf = res["xf"].nonzeros();
     }
@@ -715,6 +785,7 @@ void fail(std::string error, worker_output* output, managed_shared_memory& segme
     output->Ef = numeric_limits<double>::quiet_NaN();
     output->Q = numeric_limits<double>::quiet_NaN();
     output->p = numeric_limits<double>::quiet_NaN();
+    output->ts = double_vector(1, numeric_limits<double>::quiet_NaN(), void_alloc);
     output->Es = double_vector(1, numeric_limits<double>::quiet_NaN(), void_alloc);
     complex_vector nan_vector(L, numeric_limits<double>::quiet_NaN(), void_alloc);
     output->b0 = nan_vector;
@@ -722,6 +793,8 @@ void fail(std::string error, worker_output* output, managed_shared_memory& segme
     complex_vector_vector nan_vector_vector(L, complex_vector(dim, numeric_limits<double>::quiet_NaN(), void_alloc), void_alloc);
     output->f0 = nan_vector_vector;
     output->ff = nan_vector_vector;
+    complex_vector_vector_vector nan_vector_vector_vector(1, complex_vector_vector(L, complex_vector(dim, numeric_limits<double>::quiet_NaN(), void_alloc), void_alloc), void_alloc);
+    output->fs = nan_vector_vector_vector;
     output->runtime = escape(error).c_str();
 }
 
@@ -815,38 +888,37 @@ void worker(worker_input* input, worker_tau* tau_in, worker_output* output, mana
     SXFunction E0 = SXFunction("E0",{f}, Ef(vector<SX>{f, 0, 1}));
 
     //    ExternalFunction ode_func("ode");
-    
+
     Function ode_func, jac_func;
 
-    if (input->integrator == "cvodesjac") {
-        ODEFunction odef;
-        ode_func = odef.create();
-        JacFunction jacf;
-        jac_func = jacf.create();
-    }
-    else {
-        chdir("odes");
-        vector<Function> odes;
-        odes.push_back(ExternalFunction("ode_S"));
-        for (int ei = 0; ei < 7; ei++) {
-            for (int i = 0; i < L; i++) {
-                for (int n = 0; n <= nmax; n++) {
-                    string funcname = "ode_E_" + to_string(ei) + "_" + to_string(i) + "_" + to_string(n);
-                    odes.push_back(ExternalFunction(funcname));
-                }
+    ODEFunction odef;
+    JacFunction jacf;
+    chdir("odes");
+    vector<Function> odes;
+    odes.push_back(ExternalFunction("ode_S"));
+    for (int ei = 0; ei < 7; ei++) {
+        for (int i = 0; i < L; i++) {
+            for (int n = 0; n <= nmax; n++) {
+                string funcname = "ode_E_" + to_string(ei) + "_" + to_string(i) + "_" + to_string(n);
+                odes.push_back(ExternalFunction(funcname));
             }
         }
-        SumFunction sf(odes);
-        ode_func = sf.create();
-        chdir("..");
     }
-    
-//    SXFunction ode_func = get_ode();
-    
-//    ODEFunction odef;
-//    Function ode_func = odef.create();
-//    JacFunction jacf;
-//    Function jac_func = jacf.create();
+    SumFunction sf(odes);
+    chdir("..");
+    if (input->integrator == "cvodesjac") {
+        ode_func = odef.create();
+        jac_func = jacf.create();
+    } else {
+        ode_func = sf.create();
+    }
+
+    //    SXFunction ode_func = get_ode();
+
+    //    ODEFunction odef;
+    //    Function ode_func = odef.create();
+    //    JacFunction jacf;
+    //    Function jac_func = jacf.create();
 
     double taui;
     for (;;) {
@@ -866,8 +938,7 @@ void worker(worker_input* input, worker_tau* tau_in, worker_output* output, mana
         p[L + 3] = taui;
         try {
             evolve(E0, Ef, ode_func, jac_func, p, input, output, segment);
-        }
-        catch (std::exception& e) {
+        } catch (std::exception& e) {
             fail(e.what(), output, segment);
         }
 
@@ -979,11 +1050,11 @@ void build_odes() {
                     ode[2 * j + 1] = 0.5 * (HSdf.real().elem(2 * j + 1) + HSdf.imag().elem(2 * j));
                 }
                 SXFunction ode_func = SXFunction(func_name, daeIn("t", t, "x", f, "p", p), daeOut("ode", ode));
-//                ode_func.generate(funcname);
-                
+                //                ode_func.generate(funcname);
+
                 CodeGenerator gen;
                 gen.add(ode_func);
-//                gen.add(ode_func.fullJacobian());
+                //                gen.add(ode_func.fullJacobian());
                 gen.generate(func_name);
             }
         }
@@ -1009,18 +1080,18 @@ void build_odes() {
         ode[2 * j + 1] = 0.5 * (HSdf.real().elem(2 * j + 1) + HSdf.imag().elem(2 * j));
     }
     SXFunction ode_func = SXFunction("ode_S", daeIn("t", t, "x", f, "p", p), daeOut("ode", ode));
-//    ode_func.generate("odes");
-    
+    //    ode_func.generate("odes");
+
     CodeGenerator gen;
     gen.add(ode_func);
-//    gen.add(ode_func.fullJacobian());
+    //    gen.add(ode_func.fullJacobian());
     gen.generate("ode_S");
 
     chdir("..");
 }
 
 template<class T>
-bool paircomp(const pair<double,T>& a, const pair<double,T>& b) {
+bool paircomp(const pair<double, T>& a, const pair<double, T>& b) {
     return a.first < b.first;
 }
 
@@ -1028,54 +1099,54 @@ bool paircomp(const pair<double,T>& a, const pair<double,T>& b) {
  * 
  */
 int main(int argc, char** argv) {
-    
-//    vector<double> fin(2*L*dim, 0.25);
-//    vector<double> p({1.01015958087519, 0.914144976064563, 1.04162956443615, 1.0679898084607, 0.958180948719382, 3e11, 1e11, 1.8974531961544957e7, 1e-8});
-//    vector<DMatrix> arg({fin, DMatrix(), p, DMatrix()});
-//
-//    ODEFunction odef;
-//    Function odefun = odef.create();
-////    cout << odefun(arg) << endl;
-//    
-//    JacFunction jacfn;
-//    Function jacfun = jacfn.create();
-////    cout << jacfun(arg) << endl;
-//    return 0;
-//    
-//    vector<double> Jf({1.0227310362932056e7,1.024675659410313e7,1.0353495227480633e7,1.0297352485677032e7,
-//   1.0262727637339968e7});
-//   vector<double> dUf({-662648.4069630802,6.324989883779682e6,-2.614157014239885e6,-4.138882871558778e6,
-//   2.9101352455864474e6});
-//   double U0f = 3.7949063923089914e7;
-//   double muf = 1.8974531961544957e7;
-//   vector<double> Jpf({-9.5757307865558e13,-9.350483272606312e13,-8.11329513149425e13,
-//   -8.767128019117625e13,-9.170625884987675e13});
-//   double U0pf = 4.40274854172645e15;
-//   vector<vector<double>> jacf(2*L*dim, vector<double>(2*L*dim, 0));
-//   for (int i = 0; i < 2*L*dim; i++) {
-////           cout << ode(i, fin, Jf, Jpf, U0f, U0pf, dUf, muf) << endl;
-//           jacobian(jacf[i], i, fin, Jf, Jpf, U0f, U0pf, dUf, muf);
-//           for (int j = 0; j < 2*L*dim; j++) {
-//               if (jacf[i][j] != 0) {
-//                   cout << "(" << i+1 << "," << j+1 << ") -> " << jacf[i][j] << endl;
-//               }
-//           }
-//   }
-//    return 0;
 
-//    Function ode_func = get_ode();
-//    CodeGenerator gen;
-//    gen.add(ode_func);
-//    Function jac = ode_func.fullJacobian();
-//    gen.add(ode_func.fullJacobian());
-//    gen.generate("ode");
-//    return 0;
-    
-//    build_odes();
-//    return 0;
+    //    vector<double> fin(2*L*dim, 0.25);
+    //    vector<double> p({1.01015958087519, 0.914144976064563, 1.04162956443615, 1.0679898084607, 0.958180948719382, 3e11, 1e11, 1.8974531961544957e7, 1e-8});
+    //    vector<DMatrix> arg({fin, DMatrix(), p, DMatrix()});
+    //
+    //    ODEFunction odef;
+    //    Function odefun = odef.create();
+    ////    cout << odefun(arg) << endl;
+    //    
+    //    JacFunction jacfn;
+    //    Function jacfun = jacfn.create();
+    ////    cout << jacfun(arg) << endl;
+    //    return 0;
+    //    
+    //    vector<double> Jf({1.0227310362932056e7,1.024675659410313e7,1.0353495227480633e7,1.0297352485677032e7,
+    //   1.0262727637339968e7});
+    //   vector<double> dUf({-662648.4069630802,6.324989883779682e6,-2.614157014239885e6,-4.138882871558778e6,
+    //   2.9101352455864474e6});
+    //   double U0f = 3.7949063923089914e7;
+    //   double muf = 1.8974531961544957e7;
+    //   vector<double> Jpf({-9.5757307865558e13,-9.350483272606312e13,-8.11329513149425e13,
+    //   -8.767128019117625e13,-9.170625884987675e13});
+    //   double U0pf = 4.40274854172645e15;
+    //   vector<vector<double>> jacf(2*L*dim, vector<double>(2*L*dim, 0));
+    //   for (int i = 0; i < 2*L*dim; i++) {
+    ////           cout << ode(i, fin, Jf, Jpf, U0f, U0pf, dUf, muf) << endl;
+    //           jacobian(jacf[i], i, fin, Jf, Jpf, U0f, U0pf, dUf, muf);
+    //           for (int j = 0; j < 2*L*dim; j++) {
+    //               if (jacf[i][j] != 0) {
+    //                   cout << "(" << i+1 << "," << j+1 << ") -> " << jacf[i][j] << endl;
+    //               }
+    //           }
+    //   }
+    //    return 0;
 
-//        build_odes();
-//        return 0;
+    //    Function ode_func = get_ode();
+    //    CodeGenerator gen;
+    //    gen.add(ode_func);
+    //    Function jac = ode_func.fullJacobian();
+    //    gen.add(ode_func.fullJacobian());
+    //    gen.generate("ode");
+    //    return 0;
+
+    //    build_odes();
+    //    return 0;
+
+    //        build_odes();
+    //        return 0;
 
     ptime begin = microsec_clock::local_time();
 
@@ -1105,8 +1176,10 @@ int main(int argc, char** argv) {
 
         //        int integrator = lexical_cast<int>(argv[11]);
         std::string intg = argv[11];
-        
+
         double dt = lexical_cast<double>(argv[12]);
+
+        int ngrid = lexical_cast<int>(argv[13]);
 
 #ifdef AMAZON
         //    path resdir("/home/ubuntu/Results/Canonical Transformation Dynamical Gutzwiller");
@@ -1162,25 +1235,25 @@ int main(int argc, char** argv) {
         os << flush;
 
         cout << "Res: " << resi << endl;
-        
+
         string shm_name = "SharedMemory" + to_string(time(NULL));
 
         struct shm_remove {
             string shm_name;
 
             shm_remove(string shm_name_) : shm_name(shm_name_) {
-                shared_memory_object::remove(shm_name.c_str());//("SharedMemory");
+                shared_memory_object::remove(shm_name.c_str()); //("SharedMemory");
             }
 
             ~shm_remove() {
-                shared_memory_object::remove(shm_name.c_str());//("SharedMemory");
+                shared_memory_object::remove(shm_name.c_str()); //("SharedMemory");
             }
         } remover(shm_name);
 
         int size = 1000 * (sizeof (worker_input) + numthreads * (sizeof (worker_tau) + sizeof (worker_output))); //2 * (((2 * L * dim + L + 1) + numthreads * (4 * L * dim + 5 * L + 6)) * sizeof (double) +numthreads * 2 * sizeof (ptime)/*sizeof(time_period)*/);
 
         managed_shared_memory segment(create_only, shm_name.c_str(), size);
-//        managed_shared_memory segment(create_only, "SharedMemory", size);
+        //        managed_shared_memory segment(create_only, "SharedMemory", size);
 
         worker_input* w_input = initialize(Wi, Wf, mui, xi, segment);
         //        return 0;
@@ -1189,14 +1262,14 @@ int main(int argc, char** argv) {
         char_string integrator(intg.begin(), intg.end(), void_alloc);
         w_input->integrator = integrator;
         w_input->dt = dt;
+        w_input->ngrid = ngrid;
 
         queue<input> inputs;
         if (ntaus == 1) {
             input in;
             in.tau = taui;
             inputs.push(in);
-        }
-        else {
+        } else {
             for (int i = 0; i < ntaus; i++) {
                 input in;
                 double tau = taui + i * (tauf - taui) / (ntaus - 1);
@@ -1216,6 +1289,8 @@ int main(int argc, char** argv) {
         threads.join_all();
 
         vector<double> taures;
+        vector<vector<double>> tsres;
+        vector<vector<double>> Esres;
         vector<double> Eires;
         vector<double> Efres;
         vector<double> Qres;
@@ -1223,20 +1298,26 @@ int main(int argc, char** argv) {
         vector<vector<complex<double>>> b0res;
         vector<vector<complex<double>>> bfres;
         vector<vector < vector<complex<double>>>> ffres;
+        vector<vector<vector < vector<complex<double>>>>> fsres;
         vector<std::string> runtimeres;
 
-        vector<pair<double,double>> tauresp;
-        vector<pair<double,double>> Eiresp;
-        vector<pair<double,double>> Efresp;
-        vector<pair<double,double>> Qresp;
-        vector<pair<double,double>> presp;
-        vector<pair<double,vector<complex<double>>>> b0resp;
-        vector<pair<double,vector<complex<double>>>> bfresp;
-        vector<pair<double,vector < vector<complex<double>>>>> ffresp;
-        vector<pair<double,std::string>> runtimeresp;
+        vector<pair<double, double>> tauresp;
+        vector<pair<double, vector<double>>> tsresp;
+        vector<pair<double, vector<double>>> Esresp;
+        vector<pair<double, double>> Eiresp;
+        vector<pair<double, double>> Efresp;
+        vector<pair<double, double>> Qresp;
+        vector<pair<double, double>> presp;
+        vector<pair<double, vector<complex<double>>>> b0resp;
+        vector<pair<double, vector<complex<double>>>> bfresp;
+        vector<pair<double, vector < vector<complex<double>>>>> ffresp;
+        vector<pair<double, vector<vector < vector<complex<double>>>>>> fsresp;
+        vector<pair<double, std::string>> runtimeresp;
 
         for (results& ires : res) {
             tauresp.push_back(make_pair(ires.tau, ires.tau));
+            tsresp.push_back(make_pair(ires.tau, ires.ts));
+            Esresp.push_back(make_pair(ires.tau, ires.Es));
             Eiresp.push_back(make_pair(ires.tau, ires.Ei));
             Efresp.push_back(make_pair(ires.tau, ires.Ef));
             Qresp.push_back(make_pair(ires.tau, ires.Q));
@@ -1245,20 +1326,25 @@ int main(int argc, char** argv) {
             bfresp.push_back(make_pair(ires.tau, ires.bf));
             runtimeresp.push_back(make_pair(ires.tau, ires.runtime));
             ffresp.push_back(make_pair(ires.tau, ires.ff));
+            fsresp.push_back(make_pair(ires.tau, ires.fs));
         }
-        
+
         sort(tauresp.begin(), tauresp.end(), paircomp<double>);
+        sort(tsresp.begin(), tsresp.end(), paircomp<vector<double>>);
+        sort(Esresp.begin(), Esresp.end(), paircomp<vector<double>>);
         sort(Eiresp.begin(), Eiresp.end(), paircomp<double>);
         sort(Efresp.begin(), Efresp.end(), paircomp<double>);
         sort(Qresp.begin(), Qresp.end(), paircomp<double>);
         sort(presp.begin(), presp.end(), paircomp<double>);
         sort(b0resp.begin(), b0resp.end(), paircomp<vector<complex<double>>>);
         sort(bfresp.begin(), bfresp.end(), paircomp<vector<complex<double>>>);
-        sort(ffresp.begin(), ffresp.end(), paircomp<vector<vector<complex<double>>>>);
+        sort(ffresp.begin(), ffresp.end(), paircomp<vector < vector<complex<double>>>>);
         sort(runtimeresp.begin(), runtimeresp.end(), paircomp<string>);
-        
+
         for (int i = 0; i < tauresp.size(); i++) {
             taures.push_back(tauresp[i].second);
+            tsres.push_back(tsresp[i].second);
+            Esres.push_back(Esresp[i].second);
             Eires.push_back(Eiresp[i].second);
             Efres.push_back(Efresp[i].second);
             Qres.push_back(Qresp[i].second);
@@ -1266,29 +1352,32 @@ int main(int argc, char** argv) {
             b0res.push_back(b0resp[i].second);
             bfres.push_back(bfresp[i].second);
             ffres.push_back(ffresp[i].second);
+            fsres.push_back(fsresp[i].second);
             runtimeres.push_back(runtimeresp[i].second);
-//            taures.push_back(ires.tau);
-//            Eires.push_back(ires.Ei);
-//            Efres.push_back(ires.Ef);
-//            Qres.push_back(ires.Q);
-//            pres.push_back(ires.p);
-////            Esres.push_back(ires.Es);
-//            b0res.push_back(ires.b0);
-//            bfres.push_back(ires.bf);
-//            runtimeres.push_back(replace_all_copy(ires.runtime, "\"", "\\\""));
-//            //            vector<double> Es(ires.Es.begin(), ires.Es.end());
-//            //            Esres.push_back(Es);
-//            //            vector<complex<double>> b0(ires.b0.begin(), ires.b0.end());
-//            //            vector<complex<double>> bf(ires.bf.begin(), ires.bf.end());
-//            //            b0res.push_back(b0);
-//            //            bfres.push_back(bf);
-//            //            f0res.push_back(ires.f0);
-//            ffres.push_back(ires.ff);
-//            //            std::string runtime(ires.runtime.begin(), ires.runtime.end());
-//            //            runtimeres.push_back(replace_all_copy(runtime, "\"", "\\\""));
+            //            taures.push_back(ires.tau);
+            //            Eires.push_back(ires.Ei);
+            //            Efres.push_back(ires.Ef);
+            //            Qres.push_back(ires.Q);
+            //            pres.push_back(ires.p);
+            ////            Esres.push_back(ires.Es);
+            //            b0res.push_back(ires.b0);
+            //            bfres.push_back(ires.bf);
+            //            runtimeres.push_back(replace_all_copy(ires.runtime, "\"", "\\\""));
+            //            //            vector<double> Es(ires.Es.begin(), ires.Es.end());
+            //            //            Esres.push_back(Es);
+            //            //            vector<complex<double>> b0(ires.b0.begin(), ires.b0.end());
+            //            //            vector<complex<double>> bf(ires.bf.begin(), ires.bf.end());
+            //            //            b0res.push_back(b0);
+            //            //            bfres.push_back(bf);
+            //            //            f0res.push_back(ires.f0);
+            //            ffres.push_back(ires.ff);
+            //            //            std::string runtime(ires.runtime.begin(), ires.runtime.end());
+            //            //            runtimeres.push_back(replace_all_copy(runtime, "\"", "\\\""));
         }
 
         printMath(os, "taures", resi, taures);
+        printMath(os, "tsres", resi, tsres);
+        printMath(os, "Esres", resi, Esres);
         printMath(os, "Eires", resi, Eires);
         printMath(os, "Efres", resi, Efres);
         printMath(os, "Qres", resi, Qres);
@@ -1299,6 +1388,7 @@ int main(int argc, char** argv) {
         printMath(os, "bfres", resi, bfres);
         printMath(os, "f0res", resi, w_input->f0);
         printMath(os, "ffres", resi, ffres);
+        printMath(os, "fsres", resi, fsres);
         printMath(os, "runtime", resi, runtimeres);
 
         ptime end = microsec_clock::local_time();
@@ -1309,9 +1399,8 @@ int main(int argc, char** argv) {
 
         segment.destroy<worker_input>("input");
 
-    }
-    else {
-//        managed_shared_memory segment(open_only, "SharedMemory");
+    } else {
+        //        managed_shared_memory segment(open_only, "SharedMemory");
         managed_shared_memory segment(open_only, argv[2]);
 
         worker_input* input = segment.find<worker_input>("input").first;
